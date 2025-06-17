@@ -1,0 +1,152 @@
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: withfy_minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    networks:
+      - withfy_app_net
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: withfy_rabbitmq
+    ports:
+      - "${RABBITMQ_PORT_HOST}:${RABBITMQ_PORT}"
+      - "${RABBITMQ_MANAGEMENT_PORT_HOST}:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq/
+    restart: unless-stopped
+    networks:
+      - withfy_app_net
+
+  identity-service:
+    build:
+      context: ./identity-service
+      dockerfile: Dockerfile
+    container_name: withfy_identity_service
+    ports:
+      - "8081:8081"
+    depends_on:
+      rabbitmq:
+        condition: service_started
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_R2DBC_URL=r2dbc:postgresql://${AZURE_PG_HOST}:${AZURE_PG_PORT}/${AZURE_PG_DATABASE}?sslmode=require
+      - SPRING_R2DBC_USERNAME=${AZURE_PG_USER}
+      - SPRING_R2DBC_PASSWORD=${AZURE_PG_PASSWORD}
+      - APP_JWT_SECRET=${APP_JWT_SECRET}
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - RABBITMQ_PORT=${RABBITMQ_PORT}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
+      - USER_SERVICE_URL=${USER_SERVICE_URL_INTERNAL}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - MAIL_USERNAME=${MAIL_USERNAME}
+      - MAIL_PASSWORD=${MAIL_PASSWORD}
+      - API_GATEWAY_URL=${API_GATEWAY_URL_INTERNAL}
+    restart: on-failure
+    networks:
+      - withfy_app_net
+
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    container_name: withfy_user_service
+    ports:
+      - "8082:8082"
+    depends_on:
+      rabbitmq:
+        condition: service_started
+      storage-service:
+        condition: service_started
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_R2DBC_URL=r2dbc:postgresql://${AZURE_PG_HOST}:${AZURE_PG_PORT}/${AZURE_PG_DATABASE}?sslmode=require
+      - SPRING_R2DBC_USERNAME=${AZURE_PG_USER}
+      - SPRING_R2DBC_PASSWORD=${AZURE_PG_PASSWORD}
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - RABBITMQ_PORT=${RABBITMQ_PORT}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
+      - STORAGE_SERVICE_URL=${STORAGE_SERVICE_URL_INTERNAL}
+      - API_GATEWAY_URL=${API_GATEWAY_URL_INTERNAL}
+      - FRONTEND_URL=${FRONTEND_URL}
+    restart: on-failure
+    networks:
+      - withfy_app_net
+
+  storage-service:
+    build:
+      context: ./storage-service
+      dockerfile: Dockerfile
+    container_name: withfy_storage_service
+    ports:
+      - "8083:8083"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - MINIO_URL=http://minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET_IMAGES=images
+      - MINIO_BUCKET_SONGS=songs
+      - STORAGE_SERVICE_PUBLIC_URL_PREFIX=${MINIO_PUBLIC_URL_PREFIX}
+    restart: on-failure
+    networks:
+      - withfy_app_net
+
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: withfy_api_gateway
+    ports:
+      - "8080:8080"
+    depends_on:
+      identity-service:
+        condition: service_started
+      user-service:
+        condition: service_started
+      storage-service:
+        condition: service_started
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - APP_JWT_SECRET=${APP_JWT_SECRET}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - IDENTITY_SERVICE_URL=${IDENTITY_SERVICE_URL_INTERNAL}
+      - USER_SERVICE_URL=${USER_SERVICE_URL_INTERNAL}
+      - STORAGE_SERVICE_URL=${STORAGE_SERVICE_URL_INTERNAL}
+    restart: on-failure
+    networks:
+      - withfy_app_net
+
+volumes:
+  rabbitmq_data:
+    driver: local
+  minio_data:
+    driver: local
+
+networks:
+  withfy_app_net:
+    driver: bridge
